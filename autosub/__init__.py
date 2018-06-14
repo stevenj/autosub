@@ -25,6 +25,10 @@ DEFAULT_CONCURRENCY = 10
 DEFAULT_SRC_LANGUAGE = 'en'
 DEFAULT_DST_LANGUAGE = 'en'
 
+DEFAULT_PRE_INC=0.25
+DEFAULT_POST_INC=0.25
+DEFAULT_THRESHOLD=0.15
+
 
 def percentile(arr, percent):
     arr = sorted(arr)
@@ -42,7 +46,7 @@ def is_same_language(lang1, lang2):
 
 
 class FLACConverter(object):
-    def __init__(self, source_path, include_before=0.25, include_after=0.25):
+    def __init__(self, source_path, include_before=DEFAULT_PRE_INC, include_after=DEFAULT_POST_INC):
         self.source_path = source_path
         self.include_before = include_before
         self.include_after = include_after
@@ -114,7 +118,7 @@ class Translator(object):
             ).execute()
             if 'translations' in result and len(result['translations']) and \
                 'translatedText' in result['translations'][0]:
-                return result['translations'][0]['translatedText']
+                return result['translations'][0]['translatedText'].replace("&#39;","'")
             return ""
 
         except KeyboardInterrupt:
@@ -166,11 +170,12 @@ def find_speech_regions(filename, frame_width=4096, min_region_size=0.5, max_reg
         chunk = reader.readframes(frame_width)
         energies.append(audioop.rms(chunk, sample_width * n_channels))
 
-    threshold = percentile(energies, 0.2)
+    threshold = percentile(energies, DEFAULT_THRESHOLD)
 
     elapsed_time = 0
 
     regions = []
+    all_regions = [] # Also has regions where there is silence
     region_start = None
 
     for energy in energies:
@@ -185,10 +190,38 @@ def find_speech_regions(filename, frame_width=4096, min_region_size=0.5, max_reg
         elif (not region_start) and (not is_silence):
             region_start = elapsed_time
         elapsed_time += chunk_duration
-    return regions
+
+    region_start = 0
+    elapsed_time  = 0
+    in_silence = False
+
+    for energy in energies:
+        is_silence = energy <= threshold
+
+        region_size = elapsed_time - region_start
+        if (region_size >= max_region_size):
+            all_regions.append((region_start,elapsed_time))
+            region_start = elapsed_time
+        elif (in_silence and not is_silence):
+            in_silence = False
+            if (region_size >= min_region_size):
+                all_regions.append((region_start,elapsed_time))
+                region_start = elapsed_time
+        elif ((not in_silence) and (is_silence)):
+            in_silence = True
+            if (region_size >= min_region_size):
+                all_regions.append((region_start,elapsed_time))
+                region_start = elapsed_time
+        elapsed_time += chunk_duration
+
+    if (region_start != elapsed_time):
+        all_regions.append((region_start,elapsed_time))
+
+    return all_regions
 
 
 def main():
+    print("SJVERSION")
     parser = argparse.ArgumentParser()
     parser.add_argument('source_path', help="Path to the video or audio file to subtitle", nargs='?')
     parser.add_argument('-C', '--concurrency', help="Number of concurrent API requests to make",
@@ -262,6 +295,23 @@ def main():
 
     return 0
 
+def emit_subtitles(dest, source_path, lang, format, regions, transcripts):
+    timed_subtitles = [(r, t) for r, t in zip(regions, transcripts) if t]
+    formatter = FORMATTERS.get(format)
+    formatted_subtitles = formatter(timed_subtitles)
+
+    if not dest:
+        base, ext = os.path.splitext(source_path)
+        dest = "{base}.{format}".format(base=base, format=format)
+
+    base, ext = os.path.splitext(dest)
+    dest = "{base}.subs.{lang}{ext}".format(base=base, lang=lang, ext=ext)
+
+    with open(dest, 'wb') as f:
+        f.write(formatted_subtitles.encode("utf-8"))
+
+    return dest
+
 
 def generate_subtitles(
     source_path,
@@ -282,6 +332,8 @@ def generate_subtitles(
                                   api_key=GOOGLE_SPEECH_API_KEY)
 
     transcripts = []
+    translated_transcripts = None
+
     if regions:
         try:
             widgets = ["Converting speech regions to FLAC files: ", Percentage(), ' ', Bar(), ' ',
@@ -315,7 +367,7 @@ def generate_subtitles(
                         translated_transcripts.append(transcript)
                         pbar.update(i)
                     pbar.finish()
-                    transcripts = translated_transcripts
+#                    transcripts = translated_transcripts
                 else:
                     print(
                         "Error: Subtitle translation requires specified Google Translate API key. "
@@ -330,21 +382,13 @@ def generate_subtitles(
             print("Cancelling transcription")
             raise
 
-    timed_subtitles = [(r, t) for r, t in zip(regions, transcripts) if t]
-    formatter = FORMATTERS.get(subtitle_file_format)
-    formatted_subtitles = formatter(timed_subtitles)
-
-    dest = output
-
-    if not dest:
-        base, ext = os.path.splitext(source_path)
-        dest = "{base}.{format}".format(base=base, format=subtitle_file_format)
-
-    with open(dest, 'wb') as f:
-        f.write(formatted_subtitles.encode("utf-8"))
+    dest = emit_subtitles(output, source_path, src_language, subtitle_file_format, regions, transcripts)
+    # Don't emit translations if nothing to emit.
+    if (translated_transcripts is not None):
+        dest = emit_subtitles(output, source_path, dst_language, subtitle_file_format, regions, translated_transcripts)
 
     os.remove(audio_filename)
-
+    
     return dest
 
 
