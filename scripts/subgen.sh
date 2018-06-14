@@ -30,7 +30,7 @@ if [ ! -f $BASENAME.flac ]; then
     mv out.flac $BASENAME.flac
 fi
 
-autosub -K AIzaSyCCEptImEMH6wZswfgwtb0D65yXkgX00vs -S ja -D en -C 16 -F vtt $BASENAME.flac
+autosub -K $2 -S ja -D en -C 16 -F vtt $BASENAME.flac
 if [ $? -ne 0 ]; then
     echo
     echo "********************************************************************"
