@@ -118,7 +118,10 @@ class Translator(object):
             ).execute()
             if 'translations' in result and len(result['translations']) and \
                 'translatedText' in result['translations'][0]:
-                return result['translations'][0]['translatedText'].replace("&#39;","'")
+                text = result['translations'][0]['translatedText']
+                text = text.replace("&#39;","'")
+                text = text.replace("&quot;",'"')
+                return text
             return ""
 
         except KeyboardInterrupt:
